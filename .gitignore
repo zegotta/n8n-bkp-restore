@@ -3,7 +3,9 @@ __pycache__/
 .pytest_cache/
 *.pyc
 build/
-dist/
+dist/backups
+dist/logs
+dist/config/settings.json
 *.spec
 logs/
 backups/
