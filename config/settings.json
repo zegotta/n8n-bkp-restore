@@ -1,0 +1,19 @@
+{
+  "compare_names_case_sensitive": false,
+  "publish_created_workflows": true,
+  "backups_dir": "./backups",
+  "logs_dir": "./logs",
+  "mcp_request_timeout_seconds": 30,
+  "servers": [
+    {
+      "alias": "icomon-prod",
+      "instance_url": "https://hmln8n.icomon.com.vc",
+      "api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzNjk3OWFjOC03YzRmLTRmZGItYWU1NS1hMTg5ZmE3M2QwY2UiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiODJiNDlkMWUtMmQ3Zi00ODJkLTg5MTMtZjE2YzU1YmZmMzQzIiwiaWF0IjoxNzc4NjkxNjQzfQ.VcpGJjZ5B-ygwejrMvkjjTR9-2z9NWntwyruMADsDVE"
+    },
+    {
+      "alias": "icomon-dev",
+      "instance_url": "https://point.icomon.com.vc",
+      "api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlMTEyOTJmZS0xNzg1LTRlOTYtODZjOC1iZTM2YWNmMTNhMWMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiZmRkYTg5OWYtNWZjMy00YTc0LWIzOTgtOWE5ZTM3Nzk4ZGEyIiwiaWF0IjoxNzc4NjkxNjk2fQ.-n7UI0QySykLt2eHkVu6hfd09aruyOBkdEkdvLTBqEk"
+    }
+  ]
+}

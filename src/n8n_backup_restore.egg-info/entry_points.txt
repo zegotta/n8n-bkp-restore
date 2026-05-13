@@ -1,0 +1,2 @@
+[console_scripts]
+n8n-backup-restore = n8n_backup_restore.main:main
