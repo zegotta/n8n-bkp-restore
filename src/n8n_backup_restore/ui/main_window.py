@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from n8n_backup_restore.models.entities import AppSettings, ServerConfig, WorkflowRecord
+from n8n_backup_restore import __version__
 from n8n_backup_restore.services.backup_service import BackupService
 from n8n_backup_restore.services.restore_service import RestoreOptions, RestoreService
 from n8n_backup_restore.services.workflow_mcp_service import WorkflowMcpService
@@ -809,5 +810,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "About",
-            "n8n Backup/Restore\n\nAplicativo desktop para backup e restore de workflows n8n via API.",
+            "n8n Backup/Restore\n"
+            f"Versão: {__version__}\n\n"
+            "Aplicativo desktop para backup e restore de workflows n8n via API.",
         )
