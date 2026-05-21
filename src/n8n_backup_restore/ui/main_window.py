@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import difflib
+import html
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -33,11 +35,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QCheckBox as QtCheckBoxWidget,
+    QTextEdit,
 )
 
 from n8n_backup_restore.models.entities import AppSettings, ServerConfig, WorkflowRecord
 from n8n_backup_restore import __version__
 from n8n_backup_restore.services.backup_service import BackupService
+from n8n_backup_restore.services.backup_compare_service import BackupCompareService
 from n8n_backup_restore.services.restore_service import RestoreOptions, RestoreService
 from n8n_backup_restore.services.workflow_mcp_service import WorkflowMcpService
 from n8n_backup_restore.storage.settings_store import SettingsStore
@@ -60,11 +64,13 @@ class MainWindow(QMainWindow):
         self._workflows_loaded: list[WorkflowRecord] = []
         self._editing_server_alias: str | None = None
         self._restore_backup_options: dict[str, Path] = {}
+        self._compare_backup_options: dict[str, Path] = {}
         self._restore_workflows_loaded: list[WorkflowRecord] = []
         self._restore_workflow_files: list[Path] = []
         self._pressed_backup_checkbox_state: bool | None = None
         self._pressed_restore_checkbox_state: bool | None = None
         self._restore_apply_all_decision: bool | None = None
+        self._backup_compare_service = BackupCompareService()
 
         self.setWindowTitle("n8n Backup/Restore")
         self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
@@ -81,6 +87,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_servers_tab(), "Servidores")
         tabs.addTab(self._build_backup_tab(), "Backup")
         tabs.addTab(self._build_restore_tab(), "Restore")
+        tabs.addTab(self._build_compare_backups_tab(), "Comparar Backups")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
 
@@ -142,6 +149,7 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         self.backup_server_combo = QComboBox()
+        self.backup_server_combo.currentIndexChanged.connect(self._on_backup_server_changed)
         self.btn_load_workflows = QPushButton("Carregar workflows")
         self.btn_load_workflows.clicked.connect(self._load_workflows_for_backup)
         self.btn_load_workflows.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
@@ -195,6 +203,7 @@ class MainWindow(QMainWindow):
 
         line = QHBoxLayout()
         self.restore_server_combo = QComboBox()
+        self.restore_server_combo.currentIndexChanged.connect(self._on_restore_server_changed)
         line.addWidget(QLabel("Servidor de destino"))
         line.addWidget(self.restore_server_combo)
         layout.addLayout(line)
@@ -240,6 +249,49 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_run_restore)
         return page
 
+    def _build_compare_backups_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        top = QHBoxLayout()
+        self.compare_backup_left_combo = QComboBox()
+        self.compare_backup_right_combo = QComboBox()
+        self.btn_reload_compare_backups = QPushButton("Atualizar backups")
+        self.btn_reload_compare_backups.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.btn_reload_compare_backups.clicked.connect(self._refresh_compare_backup_options)
+        top.addWidget(QLabel("Backup A"))
+        top.addWidget(self.compare_backup_left_combo)
+        top.addWidget(QLabel("Backup B"))
+        top.addWidget(self.compare_backup_right_combo)
+        top.addWidget(self.btn_reload_compare_backups)
+        layout.addLayout(top)
+
+        self.compare_results_table = QTableWidget(0, 4)
+        self.compare_results_table.setHorizontalHeaderLabels(["BACKUP A", "BACKUP B", "STATUS", "Detalhes"])
+        self.compare_results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.compare_results_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.compare_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.compare_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.compare_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.compare_results_table)
+
+        actions = QHBoxLayout()
+        self.btn_compare_backups = QPushButton("Comparar")
+        self.btn_compare_backups.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.btn_compare_backups.clicked.connect(self._run_compare_backups)
+        self.compare_include_settings_checkbox = QCheckBox("Considerar settings", self)
+        self.compare_include_settings_checkbox.setChecked(False)
+        self.compare_include_endpoints_checkbox = QCheckBox("Comparar URLs/Endpoints", self)
+        self.compare_include_endpoints_checkbox.setChecked(False)
+        self.compare_summary_label = QLabel("")
+        actions.addWidget(self.btn_compare_backups)
+        actions.addWidget(self.compare_include_settings_checkbox)
+        actions.addWidget(self.compare_include_endpoints_checkbox)
+        actions.addWidget(self.compare_summary_label)
+        actions.addStretch()
+        layout.addLayout(actions)
+        return page
+
     def _apply_style(self) -> None:
         app = QApplication.instance()
         if app:
@@ -259,6 +311,7 @@ class MainWindow(QMainWindow):
         self._refresh_servers_table()
         self._refresh_server_combos()
         self._refresh_restore_backup_options()
+        self._refresh_compare_backup_options()
 
     def _refresh_servers_table(self) -> None:
         ordered_servers = sorted(self.settings.servers, key=lambda s: s.alias.lower())
@@ -293,10 +346,26 @@ class MainWindow(QMainWindow):
 
     def _refresh_server_combos(self) -> None:
         aliases = sorted([s.alias for s in self.settings.servers], key=str.lower)
+        current_backup_alias = self.backup_server_combo.currentText()
+        current_restore_alias = self.restore_server_combo.currentText()
+
+        self.backup_server_combo.blockSignals(True)
         self.backup_server_combo.clear()
         self.backup_server_combo.addItems(aliases)
+        if current_backup_alias:
+            idx = self.backup_server_combo.findText(current_backup_alias)
+            if idx >= 0:
+                self.backup_server_combo.setCurrentIndex(idx)
+        self.backup_server_combo.blockSignals(False)
+
+        self.restore_server_combo.blockSignals(True)
         self.restore_server_combo.clear()
         self.restore_server_combo.addItems(aliases)
+        if current_restore_alias:
+            idx = self.restore_server_combo.findText(current_restore_alias)
+            if idx >= 0:
+                self.restore_server_combo.setCurrentIndex(idx)
+        self.restore_server_combo.blockSignals(False)
 
     def _save_server(self) -> None:
         alias = self.alias_input.text().strip()
@@ -417,6 +486,11 @@ class MainWindow(QMainWindow):
             self.backup_workflows_table.setItem(row, 3, QTableWidgetItem(self._workflow_date(item, "createdAt")))
             self.backup_workflows_table.setItem(row, 4, QTableWidgetItem(self._workflow_date(item, "updatedAt")))
         self.logger.info("Workflows carregados para backup: %s", len(workflows))
+
+    def _on_backup_server_changed(self, _index: int) -> None:
+        self._workflows_loaded = []
+        self._pressed_backup_checkbox_state = None
+        self.backup_workflows_table.setRowCount(0)
 
     def _run_backup(self) -> None:
         alias = self.backup_server_combo.currentText()
@@ -569,6 +643,45 @@ class MainWindow(QMainWindow):
         self.restore_backup_combo.blockSignals(True)
         self.restore_backup_combo.clear()
 
+        for label, item in self._list_backup_dirs():
+            self._restore_backup_options[label] = item
+            self.restore_backup_combo.addItem(label)
+
+        self.restore_backup_combo.blockSignals(False)
+        self._on_restore_backup_changed()
+
+    def _refresh_compare_backup_options(self) -> None:
+        left_selected = self.compare_backup_left_combo.currentText().strip()
+        right_selected = self.compare_backup_right_combo.currentText().strip()
+        self._compare_backup_options.clear()
+        self.compare_backup_left_combo.blockSignals(True)
+        self.compare_backup_right_combo.blockSignals(True)
+        self.compare_backup_left_combo.clear()
+        self.compare_backup_right_combo.clear()
+
+        for label, item in self._list_backup_dirs():
+            self._compare_backup_options[label] = item
+            self.compare_backup_left_combo.addItem(label)
+            self.compare_backup_right_combo.addItem(label)
+
+        if left_selected:
+            idx = self.compare_backup_left_combo.findText(left_selected)
+            if idx >= 0:
+                self.compare_backup_left_combo.setCurrentIndex(idx)
+        if right_selected:
+            idx = self.compare_backup_right_combo.findText(right_selected)
+            if idx >= 0:
+                self.compare_backup_right_combo.setCurrentIndex(idx)
+        elif self.compare_backup_right_combo.count() > 1:
+            self.compare_backup_right_combo.setCurrentIndex(1)
+
+        self.compare_backup_left_combo.blockSignals(False)
+        self.compare_backup_right_combo.blockSignals(False)
+        self.compare_results_table.setRowCount(0)
+        self.compare_summary_label.setText("")
+
+    def _list_backup_dirs(self) -> list[tuple[str, Path]]:
+        out: list[tuple[str, Path]] = []
         backups_root = Path(self.settings.backups_dir)
         pattern = re.compile(r"^(\d{8})_(\d{6})_(.+)$")
         if backups_root.exists():
@@ -584,11 +697,211 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     continue
                 label = f"{alias} - {dt.strftime('%d/%m/%Y %H:%M:%S')}"
-                self._restore_backup_options[label] = item
-                self.restore_backup_combo.addItem(label)
+                out.append((label, item))
+        return out
 
-        self.restore_backup_combo.blockSignals(False)
-        self._on_restore_backup_changed()
+    def _run_compare_backups(self) -> None:
+        left_label = self.compare_backup_left_combo.currentText().strip()
+        right_label = self.compare_backup_right_combo.currentText().strip()
+        left_dir = self._compare_backup_options.get(left_label)
+        right_dir = self._compare_backup_options.get(right_label)
+
+        if left_dir is None or right_dir is None:
+            QMessageBox.warning(self, "Comparacao", "Selecione dois backups validos.")
+            return
+        if left_dir == right_dir:
+            QMessageBox.warning(self, "Comparacao", "Selecione backups diferentes para comparar.")
+            return
+
+        try:
+            rows = self._backup_compare_service.compare_directories(
+                left_dir,
+                right_dir,
+                include_settings=self.compare_include_settings_checkbox.isChecked(),
+                include_endpoints=self.compare_include_endpoints_checkbox.isChecked(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Comparacao", f"Erro ao comparar backups: {exc}")
+            return
+
+        self.compare_results_table.setRowCount(len(rows))
+        equal_count = 0
+        diff_count = 0
+        only_left_count = 0
+        only_right_count = 0
+        newer_left_count = 0
+        newer_right_count = 0
+        for row_idx, row in enumerate(rows):
+            item_left = QTableWidgetItem(row.left_name)
+            item_right = QTableWidgetItem(row.right_name)
+            item_status = QTableWidgetItem(row.status)
+            self.compare_results_table.setItem(row_idx, 0, item_left)
+            self.compare_results_table.setItem(row_idx, 1, item_right)
+            self.compare_results_table.setItem(row_idx, 2, item_status)
+            self.compare_results_table.setCellWidget(row_idx, 3, None)
+            if row.left_name and row.right_name and row.status != "Igual":
+                btn_details = QPushButton("Ver diff")
+                btn_details.clicked.connect(
+                    lambda _, workflow_name=(row.left_name or row.right_name): self._show_compare_diff_dialog(
+                        workflow_name
+                    )
+                )
+                self.compare_results_table.setCellWidget(row_idx, 3, btn_details)
+            self._apply_compare_row_color(row_idx, row.status)
+            if row.status == "Igual":
+                equal_count += 1
+            elif row.status == "Diferente":
+                diff_count += 1
+            elif row.status == "Somente A":
+                only_left_count += 1
+            elif row.status == "Somente B":
+                only_right_count += 1
+            elif row.status == "Mais atual em A":
+                newer_left_count += 1
+            elif row.status == "Mais atual em B":
+                newer_right_count += 1
+
+        self.compare_summary_label.setText(
+            " | ".join(
+                [
+                    f"Iguais: {equal_count}",
+                    f"Diferentes: {diff_count}",
+                    f"Mais atual em A: {newer_left_count}",
+                    f"Mais atual em B: {newer_right_count}",
+                    f"Somente A: {only_left_count}",
+                    f"Somente B: {only_right_count}",
+                ]
+            )
+        )
+
+    def _apply_compare_row_color(self, row_idx: int, status: str) -> None:
+        color: QColor | None = None
+        if status == "Somente A":
+            color = QColor("#E7F0FF")
+        elif status == "Somente B":
+            color = QColor("#E9F9EE")
+        elif status in {"Diferente", "Mais atual em A", "Mais atual em B"}:
+            color = QColor("#FFF5E6")
+
+        for column in range(self.compare_results_table.columnCount()):
+            item = self.compare_results_table.item(row_idx, column)
+            if item is None:
+                continue
+            if color is not None:
+                item.setBackground(color)
+
+    def _show_compare_diff_dialog(self, workflow_name: str) -> None:
+        left_label = self.compare_backup_left_combo.currentText().strip()
+        right_label = self.compare_backup_right_combo.currentText().strip()
+        left_dir = self._compare_backup_options.get(left_label)
+        right_dir = self._compare_backup_options.get(right_label)
+        if left_dir is None or right_dir is None:
+            QMessageBox.warning(self, "Comparacao", "Selecione dois backups validos.")
+            return
+
+        diff_entries = self._backup_compare_service.build_workflow_diff_entries(
+            left_dir,
+            right_dir,
+            workflow_name,
+            include_settings=self.compare_include_settings_checkbox.isChecked(),
+            include_endpoints=self.compare_include_endpoints_checkbox.isChecked(),
+        )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Diferencas - {workflow_name}")
+        dialog.setModal(True)
+        dialog.resize(980, 640)
+        layout = QVBoxLayout(dialog)
+        details = QTextEdit(dialog)
+        details.setReadOnly(True)
+        details.setHtml(self._build_diff_html(workflow_name, left_dir.name, right_dir.name, diff_entries))
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.close)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _build_diff_html(
+        self,
+        workflow_name: str,
+        left_backup_name: str,
+        right_backup_name: str,
+        diff_entries: list[tuple[str, object, object]],
+    ) -> str:
+        if not diff_entries:
+            return (
+                f"<h3>{html.escape(workflow_name)}</h3>"
+                f"<p><b>Backup A:</b> {html.escape(left_backup_name)}<br>"
+                f"<b>Backup B:</b> {html.escape(right_backup_name)}</p>"
+                "<p>Sem diferencas no criterio de comparacao atual.</p>"
+            )
+
+        parts = [
+            f"<h3>{html.escape(workflow_name)}</h3>",
+            (
+                f"<p><b>Backup A:</b> {html.escape(left_backup_name)}<br>"
+                f"<b>Backup B:</b> {html.escape(right_backup_name)}</p>"
+            ),
+            f"<p><b>Diferencas encontradas:</b> {len(diff_entries)}</p>",
+        ]
+        for path, left_value, right_value in diff_entries:
+            parts.append(f"<hr><p><b>{html.escape(path)}</b></p>")
+            if isinstance(left_value, str) and isinstance(right_value, str):
+                left_html, right_html = self._highlight_string_diff_html(left_value, right_value)
+                parts.append("<p><b>A:</b></p>")
+                parts.append(
+                    "<pre style='white-space: pre-wrap; word-break: break-word; "
+                    "background:#f8f8f8; padding:8px; border:1px solid #ddd;'>"
+                    f"{left_html}</pre>"
+                )
+                parts.append("<p><b>B:</b></p>")
+                parts.append(
+                    "<pre style='white-space: pre-wrap; word-break: break-word; "
+                    "background:#f8f8f8; padding:8px; border:1px solid #ddd;'>"
+                    f"{right_html}</pre>"
+                )
+            else:
+                parts.append("<p><b>A:</b></p>")
+                parts.append(self._value_block_html(left_value))
+                parts.append("<p><b>B:</b></p>")
+                parts.append(self._value_block_html(right_value))
+        return "".join(parts)
+
+    @staticmethod
+    def _value_block_html(value: object) -> str:
+        if isinstance(value, str):
+            text = value
+        elif value == "<missing>":
+            text = "<missing>"
+        else:
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        return (
+            "<pre style='white-space: pre-wrap; word-break: break-word; "
+            "background:#f8f8f8; padding:8px; border:1px solid #ddd;'>"
+            f"{html.escape(text)}</pre>"
+        )
+
+    @staticmethod
+    def _highlight_string_diff_html(left_value: str, right_value: str) -> tuple[str, str]:
+        matcher = difflib.SequenceMatcher(None, left_value, right_value)
+        left_parts: list[str] = []
+        right_parts: list[str] = []
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            left_chunk = html.escape(left_value[i1:i2])
+            right_chunk = html.escape(right_value[j1:j2])
+            if tag == "equal":
+                left_parts.append(left_chunk)
+                right_parts.append(right_chunk)
+            elif tag == "replace":
+                left_parts.append(f"<span style='background:#ffd6d6;'>{left_chunk}</span>")
+                right_parts.append(f"<span style='background:#d9fdd3;'>{right_chunk}</span>")
+            elif tag == "delete":
+                left_parts.append(f"<span style='background:#ffd6d6;'>{left_chunk}</span>")
+            elif tag == "insert":
+                right_parts.append(f"<span style='background:#d9fdd3;'>{right_chunk}</span>")
+        return "".join(left_parts), "".join(right_parts)
 
     def _on_restore_backup_changed(self) -> None:
         self.restore_workflows_table.setRowCount(0)
@@ -634,6 +947,12 @@ class MainWindow(QMainWindow):
             self.restore_workflows_table.setItem(row, 2, QTableWidgetItem(item.workflow_id))
             self.restore_workflows_table.setItem(row, 3, QTableWidgetItem(self._workflow_date(item, "createdAt")))
             self.restore_workflows_table.setItem(row, 4, QTableWidgetItem(self._workflow_date(item, "updatedAt")))
+
+    def _on_restore_server_changed(self, _index: int) -> None:
+        self._pressed_restore_checkbox_state = None
+        self._restore_workflows_loaded = []
+        self._restore_workflow_files = []
+        self.restore_workflows_table.setRowCount(0)
 
     def _check_all_restore_workflows(self) -> None:
         for idx in range(self.restore_workflows_table.rowCount()):

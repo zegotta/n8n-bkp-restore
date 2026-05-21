@@ -8,6 +8,7 @@ Aplicacao desktop (PySide6) para backup e restore de workflows do n8n.
 - Teste de conexao com a API n8n.
 - Listagem de workflows e backup em arquivos `.json`.
 - Restore seletivo de workflows a partir de uma pasta de backup.
+- Comparacao entre 2 backups com visao lado a lado dos fluxos.
 - Tratamento de conflito no restore:
   - renomeia e arquiva workflow existente
   - cria nova versao a partir do backup
@@ -63,6 +64,12 @@ python -m pytest -q
   - `pyproject.toml` (`project.version`)
   - `src/n8n_backup_restore/__init__.py` (`__version__`)
   - secao da versao atual em `CHANGELOG.md`
+
+## Contexto entre chats
+
+- Arquivo principal para agentes: `AGENTS.md`
+- Memoria de sessao: `docs/agents/SESSION_MEMORY.md`
+- Prompt base para novo chat: `docs/agents/NEW_CHAT_PROMPT.md`
 
 ## Build do executavel
 
