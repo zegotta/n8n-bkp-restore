@@ -157,11 +157,21 @@ class BackupCompareService:
             nodes = [BackupCompareService._normalize_node_for_cross_server(node) for node in nodes]
         if not include_endpoints:
             nodes = [BackupCompareService._normalize_node_without_endpoints(node) for node in nodes]
+        nodes = BackupCompareService._sort_nodes_for_compare(nodes)
         settings_value = payload.get("settings", {})
         if not include_settings:
             settings_value = {}
         connections_raw = payload.get("connections", {})
-        connections = BackupCompareService._normalize_connections(connections_raw)
+        node_names = {
+            str(node.get("name")).strip()
+            for node in nodes
+            if isinstance(node, dict) and str(node.get("name") or "").strip()
+        }
+        connections = BackupCompareService._normalize_connections_with_nodes(
+            connections_raw,
+            node_names=node_names,
+            top_level=True,
+        )
 
         comparable_payload = {
             "name": payload.get("name") or payload.get("workflowName"),
@@ -234,6 +244,15 @@ class BackupCompareService:
     def _normalize_parameters_for_cross_server(parameters: dict) -> dict:
         out: dict = {}
         for key, value in parameters.items():
+            if key == "id" and {"leftValue", "rightValue", "operator"}.issubset(parameters.keys()):
+                # Id interno da regra/condicao na UI do n8n; nao altera a logica.
+                continue
+            if key == "matchingColumns":
+                # Metadata de mapeamento da UI do n8n; nao afeta a logica do workflow.
+                continue
+            if key == "schema" and isinstance(value, list):
+                out[key] = BackupCompareService._normalize_workflow_input_schema_for_cross_server(value)
+                continue
             if key == "workflowId":
                 if isinstance(value, dict):
                     workflow_ref = dict(value)
@@ -258,6 +277,33 @@ class BackupCompareService:
             else:
                 out[key] = value
         return out
+
+    @staticmethod
+    def _normalize_workflow_input_schema_for_cross_server(schema_items: list[object]) -> list[object]:
+        normalized: list[object] = []
+        for item in schema_items:
+            if not isinstance(item, dict):
+                normalized.append(item)
+                continue
+            if item.get("removed") is True:
+                continue
+            clean_item = dict(item)
+            clean_item.pop("removed", None)
+            normalized.append(BackupCompareService._normalize_parameters_for_cross_server(clean_item))
+        return normalized
+
+    @staticmethod
+    def _sort_nodes_for_compare(nodes: list[object]) -> list[object]:
+        def sort_key(node: object) -> tuple[str, str, str]:
+            if not isinstance(node, dict):
+                return ("", "", json.dumps(node, ensure_ascii=False, sort_keys=True))
+            return (
+                str(node.get("name") or ""),
+                str(node.get("type") or ""),
+                json.dumps(node, ensure_ascii=False, sort_keys=True),
+            )
+
+        return sorted(nodes, key=sort_key)
 
     @staticmethod
     def _strip_endpoint_fields(value: object) -> object:
@@ -397,16 +443,38 @@ class BackupCompareService:
 
     @staticmethod
     def _normalize_connections(value: object) -> object:
+        return BackupCompareService._normalize_connections_with_nodes(value)
+
+    @staticmethod
+    def _normalize_connections_with_nodes(
+        value: object,
+        node_names: set[str] | None = None,
+        top_level: bool = False,
+    ) -> object:
         if isinstance(value, dict):
             normalized_dict: dict[str, object] = {}
             for k, v in value.items():
-                normalized_value = BackupCompareService._normalize_connections(v)
+                if top_level and node_names is not None and str(k) not in node_names:
+                    continue
+                normalized_value = BackupCompareService._normalize_connections_with_nodes(v, node_names=node_names)
                 if normalized_value in ({}, []):
                     continue
                 normalized_dict[k] = normalized_value
             return normalized_dict
         if isinstance(value, list):
-            normalized_items = [BackupCompareService._normalize_connections(item) for item in value]
+            normalized_items = [
+                BackupCompareService._normalize_connections_with_nodes(item, node_names=node_names) for item in value
+            ]
+            if node_names is not None:
+                normalized_items = [
+                    item
+                    for item in normalized_items
+                    if not (
+                        isinstance(item, dict)
+                        and set(item.keys()).issubset({"node", "type", "index"})
+                        and str(item.get("node") or "") not in node_names
+                    )
+                ]
             if all(
                 isinstance(item, dict)
                 and set(item.keys()).issubset({"node", "type", "index"})

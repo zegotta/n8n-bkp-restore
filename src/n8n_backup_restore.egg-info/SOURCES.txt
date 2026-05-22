@@ -11,6 +11,7 @@ src/n8n_backup_restore.egg-info/top_level.txt
 src/n8n_backup_restore/models/__init__.py
 src/n8n_backup_restore/models/entities.py
 src/n8n_backup_restore/services/__init__.py
+src/n8n_backup_restore/services/backup_compare_service.py
 src/n8n_backup_restore/services/backup_service.py
 src/n8n_backup_restore/services/mcp_client.py
 src/n8n_backup_restore/services/restore_service.py
@@ -22,7 +23,10 @@ src/n8n_backup_restore/ui/main_window.py
 src/n8n_backup_restore/utils/__init__.py
 src/n8n_backup_restore/utils/files.py
 src/n8n_backup_restore/utils/logging_setup.py
+tests/test_backup_compare_service.py
 tests/test_backup_service.py
 tests/test_files.py
 tests/test_restore_service.py
 tests/test_settings_store.py
+tests/test_versioning.py
+tests/test_workflow_mcp_service.py

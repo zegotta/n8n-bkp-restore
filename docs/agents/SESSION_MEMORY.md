@@ -28,6 +28,10 @@
   - filtros opcionais para `settings` e URLs/endpoints
   - botao de detalhe por linha com diff em janela modal
   - realce visual de diferencas de string sem truncamento
+- Comparacao cross-server passou a ignorar `workflowInputs.matchingColumns` em nodes `Execute Workflow`, reduzindo falso positivo causado por metadata da UI do n8n.
+- Comparacao de backups passou a ignorar conexoes orfas com origem/destino fora da lista de nodes do workflow.
+- Comparacao cross-server passou a ignorar `workflowInputs.schema` marcados como removidos e o atributo `removed` dessa metadata.
+- Comparacao cross-server passou a ignorar ids internos de regras/condicoes e a ordem de `nodes` quando as conexoes e a definicao dos nodes permanecem equivalentes.
 - Ao trocar servidor na tela de Backup e Restore, a lista de fluxos eh limpa para evitar dados da selecao anterior.
 
 ## Proximos passos sugeridos
